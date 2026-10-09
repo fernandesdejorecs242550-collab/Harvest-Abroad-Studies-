@@ -3,11 +3,18 @@ const serverless = require('serverless-http');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 
+// Node 18+ has native fetch, but if you run locally on Node <18, uncomment:
+// const fetch = require('node-fetch');
+
 const app = express();
 app.use(express.json({ limit: '30kb' }));
+
+// Security headers
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
   next();
 });
 
@@ -63,7 +70,7 @@ router.post('/enquiries', async (req, res) => {
     const enquiry = await Enquiry.create({ name, email, phone, destination, studyLevel, message });
     return res.status(201).json({ message: 'Thanks! Your enquiry has been received.', id: enquiry._id });
   } catch (err) {
-    console.error('Enquiry submission failed:', err.message);
+    console.error('Enquiry submission failed:', process.env.NODE_ENV === 'production' ? err.message : err.stack);
     if (err.message === 'MONGO_URI is not configured') return res.status(503).json({ message: 'Enquiry storage is not configured yet. Please contact the team directly.' });
     return res.status(500).json({ message: 'We could not save your enquiry right now. Please try again later.' });
   }
@@ -87,10 +94,15 @@ router.post('/chat', async (req, res) => {
     });
     if (!response.ok) throw new Error(`AI provider returned ${response.status}`);
     const data = await response.json();
-    const reply = (data.output || []).flatMap(item => item.content || []).filter(item => item.type === 'output_text').map(item => item.text).join('\n').trim();
+    const reply = Array.isArray(data.output)
+      ? data.output.flatMap(item => item.content || [])
+          .filter(item => item.type === 'output_text')
+          .map(item => item.text)
+          .join('\n').trim()
+      : '';
     return res.json({ reply: reply || fallback, mode: 'ai' });
   } catch (err) {
-    console.error('Chat provider fallback:', err.message);
+    console.error('Chat provider fallback:', process.env.NODE_ENV === 'production' ? err.message : err.stack);
     return res.json({ reply: fallback, mode: 'faq' });
   }
 });
@@ -110,31 +122,17 @@ router.post('/admin/login', (req, res) => {
 router.get('/admin/enquiries', auth, async (_req, res) => {
   try {
     await connectDatabase();
-    const enquiries = await Enquiry.find().sort({ createdAt: -1 }).limit(500).lean();
+    const enquiries = await Enquiry.find().sort({ createdAt: -1 }).limit(50).lean();
     return res.json({ enquiries });
   } catch (err) {
-    console.error('Admin enquiry list failed:', err.message);
+    console.error('Admin enquiry list failed:', process.env.NODE_ENV === 'production' ? err.message : err.stack);
     return res.status(503).json({ message: 'Database unavailable or not configured.' });
   }
 });
 
 function localAnswer(message) {
   const q = message.toLowerCase();
-  if (/cost|fee|budget|price/.test(q)) return 'Costs vary by country, course, institution and living expenses. Package prices should be confirmed directly with Harvest Abroad Studies. Share your destination and budget through the enquiry form for personalised guidance.';
-  if (/visa|immigration/.test(q)) return 'Visa requirements depend on the destination and your circumstances. Please verify current rules on the official government immigration website. Our team can help you understand preparation steps, but visa outcomes cannot be guaranteed.';
-  if (/document|paperwork/.test(q)) return 'Common documents may include academic transcripts, a passport, language-test results, a statement of purpose, recommendations and financial evidence. The exact list depends on the institution, course and visa category.';
-  if (/europe|usa|united states|canada|uk|united kingdom|australia|germany|ireland/.test(q)) return 'The right destination depends on your academic background, subject, budget and goals. Explore the destination cards on our website and send an enquiry to discuss suitable options.';
-  if (/admission|apply|application|deadline/.test(q)) return 'Start by shortlisting courses, checking entry requirements and deadlines, and preparing documents. Requirements differ by institution, so confirm them on the official university website.';
-  if (/scholarship|funding/.test(q)) return 'Scholarship availability and eligibility vary by institution, programme and destination. Check university funding pages and official scholarship sources. Do not assume funding is guaranteed.';
-  return 'I can help with general questions about destinations, applications, documents, budgets and planning. For personalised advice, use the enquiry form. For official requirements, confirm details with the relevant university or government website.';
-}
-
-// Support both Netlify's rewritten function paths and local /api routes.
-app.use('/', router);
-app.use('/api', router);
-app.use((err, _req, res, _next) => {
-  console.error('Unhandled API error:', err.message);
-  res.status(500).json({ message: 'Unexpected server error.' });
-});
-
-module.exports.handler = serverless(app);
+  if (/cost|fee|budget|price/.test(q)) return 'Costs vary by country, course, institution and living expenses. Package prices should be confirmed directly with Harvest Abroad Studies.';
+  if (/visa|immigration/.test(q)) return 'Visa requirements depend on the destination and your circumstances. Please verify current rules on the official government immigration website.';
+  if (/document|paperwork/.test(q)) return 'Common documents may include transcripts, passport, language-test results, statement of purpose, recommendations and financial evidence.';
+  if (/europe|usa|united states|canada|uk|united kingdom|australia|germany|ireland/.test(q)) return 'The right destination depends on your academic background, subject, budget and goals. Explore the destination cards and send an enquiry to discuss
